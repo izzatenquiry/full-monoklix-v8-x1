@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 // FIX: Import Language type for state management.
 import { type View, type User, type BatchProcessorPreset, type Language, UserStatus } from './types';
 import Sidebar from './components/Sidebar';
@@ -121,7 +121,8 @@ const App: React.FC = () => {
   const [isShowingWelcome, setIsShowingWelcome] = useState(false);
   const [justLoggedIn, setJustLoggedIn] = useState(false);
   const [veoTokenRefreshedAt, setVeoTokenRefreshedAt] = useState<string | null>(null);
-  const [isAutoAssigningToken, setIsAutoAssigningToken] = useState(false);
+  const [showAssignModal, setShowAssignModal] = useState(false);
+  const isAssigningTokenRef = useRef(false);
   const [autoAssignError, setAutoAssignError] = useState<string | null>(null);
   const [notification, setNotification] = useState<string | null>(null);
 
@@ -364,38 +365,43 @@ const App: React.FC = () => {
         };
     }, [currentUser?.id, currentUser?.status, handleLogout]);
 
-    const autoAssignPersonalToken = useCallback(async () => {
-        if (!currentUser || currentUser.personalAuthToken || isAutoAssigningToken || currentUser.status === 'trial') {
-            return;
+    const assignTokenProcess = useCallback(async (): Promise<boolean> => {
+        if (!currentUser || currentUser.personalAuthToken || isAssigningTokenRef.current || currentUser.status === 'trial') {
+            return false;
         }
-
-        setIsAutoAssigningToken(true);
+    
+        isAssigningTokenRef.current = true;
         setAutoAssignError(null);
         console.log('User has no personal auth token. Starting auto-assignment process...');
-
+    
         const tokensJSON = sessionStorage.getItem('veoAuthTokens');
         if (!tokensJSON) {
             console.log('No shared tokens available to test for auto-assignment.');
             setAutoAssignError("Sistem tidak dapat mencari sebarang token sambungan yang tersedia. Sila hubungi admin.");
-            setIsAutoAssigningToken(false);
-            return;
+            isAssigningTokenRef.current = false;
+            return false;
         }
-
+    
         let tokenAssigned = false;
         try {
             const sharedTokens: { token: string; createdAt: string }[] = JSON.parse(tokensJSON);
+            
+            // Shuffle tokens to prevent "thundering herd" problem during testing
+            for (let i = sharedTokens.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [sharedTokens[i], sharedTokens[j]] = [sharedTokens[j], sharedTokens[i]];
+            }
 
             for (const tokenData of sharedTokens) {
                 console.log(`[Auto-Assign] Testing shared token... ${tokenData.token.slice(-6)}`);
                 const results = await runComprehensiveTokenTest(tokenData.token);
                 const isImagenOk = results.find(r => r.service === 'Imagen')?.success;
                 const isVeoOk = results.find(r => r.service === 'Veo')?.success;
-
+    
                 if (isImagenOk && isVeoOk) {
                     console.log(`[Auto-Assign] Found a valid token: ...${tokenData.token.slice(-6)}. Assigning to user.`);
-                    
                     const assignResult = await assignPersonalTokenAndIncrementUsage(currentUser.id, tokenData.token);
-
+    
                     if (assignResult.success === false) {
                         console.warn(`[Auto-Assign] Could not assign token ...${tokenData.token.slice(-6)}: ${assignResult.message}. Trying next.`);
                         if (assignResult.message === 'DB_SCHEMA_MISSING_COLUMN_personal_auth_token' && currentUser.role === 'admin') {
@@ -410,26 +416,44 @@ const App: React.FC = () => {
                     }
                 }
             }
-
+    
             if (!tokenAssigned) {
                 console.log('[Auto-Assign] No valid shared tokens found after testing all available tokens.');
                 setAutoAssignError("Semua slot sambungan sedang penuh. Sila cuba lagi sebentar lagi atau hubungi admin.");
             }
-
+    
         } catch (error) {
             console.error('[Auto-Assign] An error occurred during the token assignment process:', error);
             setAutoAssignError("An unexpected error occurred during assignment. Please try again.");
         } finally {
-            if (tokenAssigned) {
-              setIsAutoAssigningToken(false);
-            }
+            isAssigningTokenRef.current = false;
         }
-    }, [currentUser, isAutoAssigningToken, handleUserUpdate]);
+        return tokenAssigned;
+    }, [currentUser, handleUserUpdate]);
 
-    // Effect to auto-assign a personal auth token if the user doesn't have one.
     useEffect(() => {
-        autoAssignPersonalToken();
-    }, [currentUser?.id, autoAssignPersonalToken]);
+        const runAssignment = async () => {
+            if (currentUser && !currentUser.personalAuthToken && !isAssigningTokenRef.current) {
+                if (justLoggedIn) {
+                    setShowAssignModal(true);
+                    const success = await assignTokenProcess();
+                    if (success) {
+                        setShowAssignModal(false);
+                    }
+                } else {
+                    await assignTokenProcess();
+                }
+            }
+        };
+        runAssignment();
+    }, [currentUser, justLoggedIn, assignTokenProcess]);
+    
+    const retryAssignment = useCallback(async () => {
+        const success = await assignTokenProcess();
+        if (success) {
+            setShowAssignModal(false);
+        }
+    }, [assignTokenProcess]);
 
   const handleLoginSuccess = async (user: User) => {
     handleUserUpdate(user);
@@ -677,7 +701,7 @@ To unlock this and all other advanced features, please upgrade to the full versi
 
   return (
     <div className="flex h-screen bg-neutral-100 dark:bg-neutral-900 text-neutral-800 dark:text-neutral-100 font-sans">
-      {isAutoAssigningToken && <AssigningTokenModal error={autoAssignError} onRetry={autoAssignPersonalToken} />}
+      {showAssignModal && <AssigningTokenModal error={autoAssignError} onRetry={retryAssignment} />}
       <Sidebar 
         activeView={activeView} 
         setActiveView={setActiveView} 
