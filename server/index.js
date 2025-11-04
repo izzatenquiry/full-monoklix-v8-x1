@@ -6,15 +6,52 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const VEO_API_BASE = 'https://aisandbox-pa.googleapis.com/v1';
 
+// ===============================
+// 📝 LOGGER
+// ===============================
+const log = (level, req, ...messages) => {
+  const timestamp = new Date().toLocaleString('sv-SE', {
+    timeZone: 'Asia/Kuala_Lumpur',
+  });
+  const username = req ? (req.headers['x-user-username'] || 'anonymous') : 'SYSTEM';
+  const prefix = `[${timestamp}] [${username}]`;
+
+  // Stringify objects for better readability
+  const processedMessages = messages.map(msg => {
+    if (typeof msg === 'object' && msg !== null) {
+      try {
+        // Truncate long base64 strings in logs
+        const tempMsg = JSON.parse(JSON.stringify(msg));
+        if (tempMsg?.imageInput?.rawImageBytes?.length > 100) {
+            tempMsg.imageInput.rawImageBytes = tempMsg.imageInput.rawImageBytes.substring(0, 50) + '...[TRUNCATED]';
+        }
+         if (tempMsg?.requests?.[0]?.textInput?.prompt?.length > 200) {
+            tempMsg.requests[0].textInput.prompt = tempMsg.requests[0].textInput.prompt.substring(0, 200) + '...[TRUNCATED]';
+        }
+        return JSON.stringify(tempMsg, null, 2);
+      } catch (e) {
+        return '[Unserializable Object]';
+      }
+    }
+    return msg;
+  });
+
+  if (level === 'error') {
+    console.error(prefix, ...processedMessages);
+  } else {
+    console.log(prefix, ...processedMessages);
+  }
+};
+
+
 // A helper to safely parse JSON from a response
-async function getJson(response) {
+async function getJson(response, req) {
     const text = await response.text();
     try {
         return JSON.parse(text);
     } catch (e) {
-        console.error(`❌ Upstream API response is not valid JSON. Status: ${response.status}`);
-        console.error(`   Body: ${text}`);
-        // Return an object that looks like an error structure
+        log('error', req, `❌ Upstream API response is not valid JSON. Status: ${response.status}`);
+        log('error', req, `   Body: ${text}`);
         return { 
             error: 'Bad Gateway', 
             message: 'The API returned an invalid (non-JSON) response.', 
@@ -46,16 +83,16 @@ app.get('/health', (req, res) => {
 
 // 🎬 TEXT-TO-VIDEO
 app.post('/api/veo/generate-t2v', async (req, res) => {
-  console.log('\n🎬 ===== [T2V] TEXT-TO-VIDEO REQUEST =====');
+  log('log', req, '\n🎬 ===== [T2V] TEXT-TO-VIDEO REQUEST =====');
   try {
     const authToken = req.headers.authorization?.replace('Bearer ', '');
     if (!authToken) {
-      console.error('❌ No auth token provided');
+      log('error', req, '❌ No auth token provided');
       return res.status(401).json({ error: 'No auth token provided' });
     }
 
-    console.log('📤 Forwarding to Veo API...');
-    console.log('📦 Request body:', JSON.stringify(req.body, null, 2));
+    log('log', req, '📤 Forwarding to Veo API...');
+    log('log', req, '📦 Request body:', req.body);
 
     const response = await fetch(`${VEO_API_BASE}/video:batchAsyncGenerateVideoText`, {
       method: 'POST',
@@ -68,40 +105,38 @@ app.post('/api/veo/generate-t2v', async (req, res) => {
       body: JSON.stringify(req.body)
     });
 
-    const data = await getJson(response);
-    console.log('📨 Response status:', response.status);
-    console.log('📨 Response data:', JSON.stringify(data, null, 2));
+    const data = await getJson(response, req);
+    log('log', req, '📨 Response status:', response.status);
     
     if (!response.ok) {
-      console.error('❌ Veo API Error (T2V):', data);
+      log('error', req, '❌ Veo API Error (T2V):', data);
       return res.status(response.status).json(data);
     }
 
-    console.log('✅ [T2V] Success - Operations:', data.operations?.length || 0);
-    console.log('=========================================\n');
+    log('log', req, '✅ [T2V] Success - Operations:', data.operations?.length || 0);
+    log('log', req, '=========================================\n');
     res.json(data);
   } catch (error) {
-    console.error('❌ Proxy error (T2V):', error);
+    log('error', req, '❌ Proxy error (T2V):', error);
     res.status(500).json({ error: error.message });
   }
 });
 
 // 🖼️ IMAGE-TO-VIDEO
 app.post('/api/veo/generate-i2v', async (req, res) => {
-  console.log('\n🖼️ ===== [I2V] IMAGE-TO-VIDEO REQUEST =====');
+  log('log', req, '\n🖼️ ===== [I2V] IMAGE-TO-VIDEO REQUEST =====');
   try {
     const authToken = req.headers.authorization?.replace('Bearer ', '');
     if (!authToken) {
-      console.error('❌ No auth token provided');
+      log('error', req, '❌ No auth token provided');
       return res.status(401).json({ error: 'No auth token provided' });
     }
 
-    const logBody = JSON.parse(JSON.stringify(req.body));
-    if (logBody.requests?.[0]?.startImage?.mediaId) {
-      console.log('📤 Has startImage with mediaId:', logBody.requests[0].startImage.mediaId);
+    if (req.body.requests?.[0]?.startImage?.mediaId) {
+      log('log', req, '📤 Has startImage with mediaId:', req.body.requests[0].startImage.mediaId);
     }
-    console.log('📤 Prompt:', logBody.requests?.[0]?.textInput?.prompt?.substring(0, 100) + '...');
-    console.log('📤 Aspect ratio:', logBody.requests?.[0]?.aspectRatio);
+    log('log', req, '📤 Prompt:', req.body.requests?.[0]?.textInput?.prompt?.substring(0, 100) + '...');
+    log('log', req, '📤 Aspect ratio:', req.body.requests?.[0]?.aspectRatio);
     
     const response = await fetch(`${VEO_API_BASE}/video:batchAsyncGenerateVideoStartImage`, {
       method: 'POST',
@@ -114,35 +149,34 @@ app.post('/api/veo/generate-i2v', async (req, res) => {
       body: JSON.stringify(req.body)
     });
 
-    const data = await getJson(response);
-    console.log('📨 Response status:', response.status);
-    console.log('📨 Response data:', JSON.stringify(data, null, 2));
+    const data = await getJson(response, req);
+    log('log', req, '📨 Response status:', response.status);
     
     if (!response.ok) {
-      console.error('❌ Veo API Error (I2V):', data);
+      log('error', req, '❌ Veo API Error (I2V):', data);
       return res.status(response.status).json(data);
     }
 
-    console.log('✅ [I2V] Success - Operations:', data.operations?.length || 0);
-    console.log('=========================================\n');
+    log('log', req, '✅ [I2V] Success - Operations:', data.operations?.length || 0);
+    log('log', req, '=========================================\n');
     res.json(data);
   } catch (error) {
-    console.error('❌ Proxy error (I2V):', error);
+    log('error', req, '❌ Proxy error (I2V):', error);
     res.status(500).json({ error: error.message });
   }
 });
 
 // 🔍 CHECK VIDEO STATUS
 app.post('/api/veo/status', async (req, res) => {
-  console.log('\n🔍 ===== [STATUS] CHECK VIDEO STATUS =====');
+  log('log', req, '\n🔍 ===== [STATUS] CHECK VIDEO STATUS =====');
   try {
     const authToken = req.headers.authorization?.replace('Bearer ', '');
     if (!authToken) {
-      console.error('❌ No auth token provided');
+      log('error', req, '❌ No auth token provided');
       return res.status(401).json({ error: 'No auth token provided' });
     }
 
-    console.log('📦 Payload:', JSON.stringify(req.body, null, 2));
+    log('log', req, '📦 Payload:', req.body);
     
     const response = await fetch(`${VEO_API_BASE}/video:batchCheckAsyncVideoGenerationStatus`, {
       method: 'POST',
@@ -155,42 +189,39 @@ app.post('/api/veo/status', async (req, res) => {
       body: JSON.stringify(req.body)
     });
 
-    const data = await getJson(response);
-    console.log('📨 Response status:', response.status);
-    console.log('📨 Response data:', JSON.stringify(data, null, 2));
+    const data = await getJson(response, req);
+    log('log', req, '📨 Response status:', response.status);
     
     if (!response.ok) {
-      console.error('❌ Veo API Error (Status):', data);
+      log('error', req, '❌ Veo API Error (Status):', data);
       return res.status(response.status).json(data);
     }
 
     if (data.operations?.[0]) {
-      console.log('📊 Operation status:', data.operations[0].status);
-      console.log('📊 Done:', data.operations[0].done);
+      log('log', req, '📊 Operation status:', data.operations[0].status, 'Done:', data.operations[0].done);
     }
 
-    console.log('✅ [STATUS] Success');
-    console.log('=========================================\n');
+    log('log', req, '✅ [STATUS] Success');
+    log('log', req, '=========================================\n');
     res.json(data);
   } catch (error) {
-    console.error('❌ Proxy error (STATUS):', error);
+    log('error', req, '❌ Proxy error (STATUS):', error);
     res.status(500).json({ error: error.message });
   }
 });
 
 // 📤 VEO UPLOAD IMAGE
 app.post('/api/veo/upload', async (req, res) => {
-  console.log('\n📤 ===== [VEO UPLOAD] IMAGE UPLOAD =====');
+  log('log', req, '\n📤 ===== [VEO UPLOAD] IMAGE UPLOAD =====');
   try {
     const authToken = req.headers.authorization?.replace('Bearer ', '');
     if (!authToken) {
-      console.error('❌ No auth token provided');
+      log('error', req, '❌ No auth token provided');
       return res.status(401).json({ error: 'No auth token provided' });
     }
 
-    console.log('📤 Image size:', req.body.imageInput?.rawImageBytes?.length || 0, 'chars');
-    console.log('📤 Mime type:', req.body.imageInput?.mimeType);
-    console.log('📤 Aspect ratio:', req.body.imageInput?.aspectRatio);
+    log('log', req, '📤 Mime type:', req.body.imageInput?.mimeType);
+    log('log', req, '📤 Aspect ratio:', req.body.imageInput?.aspectRatio);
 
     const response = await fetch(`${VEO_API_BASE}:uploadUserImage`, {
       method: 'POST',
@@ -203,21 +234,20 @@ app.post('/api/veo/upload', async (req, res) => {
       body: JSON.stringify(req.body)
     });
 
-    const data = await getJson(response);
-    console.log('📨 Response status:', response.status);
-    console.log('📨 Response data:', JSON.stringify(data, null, 2));
+    const data = await getJson(response, req);
+    log('log', req, '📨 Response status:', response.status);
     
     if (!response.ok) {
-      console.error('❌ Upload Error:', data);
+      log('error', req, '❌ Upload Error:', data);
       return res.status(response.status).json(data);
     }
 
     const mediaId = data.mediaGenerationId?.mediaGenerationId || data.mediaId;
-    console.log('✅ [VEO UPLOAD] Success - MediaId:', mediaId);
-    console.log('=========================================\n');
+    log('log', req, '✅ [VEO UPLOAD] Success - MediaId:', mediaId);
+    log('log', req, '=========================================\n');
     res.json(data);
   } catch (error) {
-    console.error('❌ Proxy error (VEO UPLOAD):', error);
+    log('error', req, '❌ Proxy error (VEO UPLOAD):', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -228,16 +258,16 @@ app.post('/api/veo/upload', async (req, res) => {
 
 // 🎨 GENERATE IMAGE (Imagen T2I)
 app.post('/api/imagen/generate', async (req, res) => {
-  console.log('\n🎨 ===== [IMAGEN] GENERATE IMAGE =====');
+  log('log', req, '\n🎨 ===== [IMAGEN] GENERATE IMAGE =====');
   try {
     const authToken = req.headers.authorization?.replace('Bearer ', '');
     if (!authToken) {
-      console.error('❌ No auth token provided');
+      log('error', req, '❌ No auth token provided');
       return res.status(401).json({ error: 'No auth token provided' });
     }
 
-    console.log('📤 Forwarding to Imagen API...');
-    console.log('📦 Request body:', JSON.stringify(req.body, null, 2));
+    log('log', req, '📤 Forwarding to Imagen API...');
+    log('log', req, '📦 Request body:', req.body);
 
     const response = await fetch(`${VEO_API_BASE}/whisk:generateImage`, {
       method: 'POST',
@@ -250,37 +280,36 @@ app.post('/api/imagen/generate', async (req, res) => {
       body: JSON.stringify(req.body)
     });
 
-    const data = await getJson(response);
-    console.log('📨 Response status:', response.status);
+    const data = await getJson(response, req);
+    log('log', req, '📨 Response status:', response.status);
     
     if (!response.ok) {
-      console.error('❌ Imagen API Error:', JSON.stringify(data, null, 2));
+      log('error', req, '❌ Imagen API Error:', data);
       return res.status(response.status).json(data);
     }
 
-    console.log('✅ [IMAGEN] Success - Generated:', data.imagePanels?.length || 0, 'panels');
-    console.log('=========================================\n');
+    log('log', req, '✅ [IMAGEN] Success - Generated:', data.imagePanels?.length || 0, 'panels');
+    log('log', req, '=========================================\n');
     res.json(data);
   } catch (error) {
-    console.error('❌ Proxy error (IMAGEN GENERATE):', error);
+    log('error', req, '❌ Proxy error (IMAGEN GENERATE):', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// ✏️ RUN RECIPE (Imagen Edit/Compose) - ✅ FIXED FORMAT & ENDPOINT
+// ✏️ RUN RECIPE (Imagen Edit/Compose)
 app.post('/api/imagen/run-recipe', async (req, res) => {
-  console.log('\n✏️ ===== [IMAGEN RECIPE] RUN RECIPE =====');
+  log('log', req, '\n✏️ ===== [IMAGEN RECIPE] RUN RECIPE =====');
   try {
     const authToken = req.headers.authorization?.replace('Bearer ', '');
     if (!authToken) {
-      console.error('❌ No auth token provided');
+      log('error', req, '❌ No auth token provided');
       return res.status(401).json({ error: 'No auth token provided' });
     }
 
-    console.log('📤 Forwarding recipe to Imagen API...');
-    console.log('📦 Full body:', JSON.stringify(req.body, null, 2));
+    log('log', req, '📤 Forwarding recipe to Imagen API...');
+    log('log', req, '📦 Full body:', req.body);
 
-    // CORRECTED ENDPOINT
     const response = await fetch(`${VEO_API_BASE}/whisk:runImageRecipe`, {
       method: 'POST',
       headers: {
@@ -292,44 +321,43 @@ app.post('/api/imagen/run-recipe', async (req, res) => {
       body: JSON.stringify(req.body)
     });
 
-    const data = await getJson(response);
-    console.log('📨 Response status:', response.status);
+    const data = await getJson(response, req);
+    log('log', req, '📨 Response status:', response.status);
     
     if (!response.ok) {
-      console.error('❌ Imagen Recipe Error:', JSON.stringify(data, null, 2));
+      log('error', req, '❌ Imagen Recipe Error:', data);
       return res.status(response.status).json(data);
     }
     
     const panelCount = data.imagePanels?.length || 0;
     const imageCount = data.imagePanels?.[0]?.generatedImages?.length || 0;
     
-    console.log('✅ [IMAGEN RECIPE] Success');
-    console.log(`   Generated ${panelCount} panel(s) with ${imageCount} image(s)`);
-    console.log('=========================================\n');
+    log('log', req, '✅ [IMAGEN RECIPE] Success');
+    log('log', req, `   Generated ${panelCount} panel(s) with ${imageCount} image(s)`);
+    log('log', req, '=========================================\n');
     
     res.json(data);
   } catch (error) {
-    console.error('❌ Proxy error (IMAGEN RECIPE):', error);
+    log('error', req, '❌ Proxy error (IMAGEN RECIPE):', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// 📤 IMAGEN UPLOAD IMAGE - ✅ FIXED FORMAT
+// 📤 IMAGEN UPLOAD IMAGE
 app.post('/api/imagen/upload', async (req, res) => {
-  console.log('\n📤 ===== [IMAGEN UPLOAD] IMAGE UPLOAD =====');
+  log('log', req, '\n📤 ===== [IMAGEN UPLOAD] IMAGE UPLOAD =====');
   try {
     const authToken = req.headers.authorization?.replace('Bearer ', '');
     if (!authToken) {
-      console.error('❌ No auth token provided');
+      log('error', req, '❌ No auth token provided');
       return res.status(401).json({ error: 'No auth token provided' });
     }
 
     const uploadMediaInput = req.body.uploadMediaInput;
     if (uploadMediaInput) {
-      console.log('📤 Media category:', uploadMediaInput.mediaCategory);
-      console.log('📤 Raw bytes length:', uploadMediaInput.rawBytes?.length || 0);
+      log('log', req, '📤 Media category:', uploadMediaInput.mediaCategory);
     }
-    console.log('📦 Full request body keys:', Object.keys(req.body));
+    log('log', req, '📦 Full request body keys:', Object.keys(req.body));
 
     const response = await fetch(`${VEO_API_BASE}:uploadUserImage`, {
       method: 'POST',
@@ -342,12 +370,11 @@ app.post('/api/imagen/upload', async (req, res) => {
       body: JSON.stringify(req.body)
     });
 
-    const data = await getJson(response);
-    console.log('📨 Response status:', response.status);
-    console.log('📨 Response data:', JSON.stringify(data, null, 2));
+    const data = await getJson(response, req);
+    log('log', req, '📨 Response status:', response.status);
     
     if (!response.ok) {
-      console.error('❌ Imagen Upload Error:', data);
+      log('error', req, '❌ Imagen Upload Error:', data);
       return res.status(response.status).json(data);
     }
 
@@ -355,11 +382,11 @@ app.post('/api/imagen/upload', async (req, res) => {
                    data.mediaGenerationId?.mediaGenerationId || 
                    data.mediaId;
     
-    console.log('✅ [IMAGEN UPLOAD] Success - MediaId:', mediaId);
-    console.log('=========================================\n');
+    log('log', req, '✅ [IMAGEN UPLOAD] Success - MediaId:', mediaId);
+    log('log', req, '=========================================\n');
     res.json(data);
   } catch (error) {
-    console.error('❌ Proxy error (IMAGEN UPLOAD):', error);
+    log('error', req, '❌ Proxy error (IMAGEN UPLOAD):', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -368,22 +395,22 @@ app.post('/api/imagen/upload', async (req, res) => {
 // 📥 DOWNLOAD VIDEO (CORS BYPASS)
 // ===============================
 app.get('/api/veo/download-video', async (req, res) => {
-  console.log('\n📥 ===== [DOWNLOAD] VIDEO DOWNLOAD =====');
+  log('log', req, '\n📥 ===== [DOWNLOAD] VIDEO DOWNLOAD =====');
   try {
     const videoUrl = req.query.url;
     
     if (!videoUrl || typeof videoUrl !== 'string') {
-      console.error('❌ No URL provided');
+      log('error', req, '❌ No URL provided');
       return res.status(400).json({ error: 'Video URL is required' });
     }
 
-    console.log('📥 Video URL:', videoUrl);
-    console.log('📥 Fetching and streaming from Google Storage...');
+    log('log', req, '📥 Video URL:', videoUrl);
+    log('log', req, '📥 Fetching and streaming from Google Storage...');
 
     const response = await fetch(videoUrl);
     
     if (!response.ok) {
-      console.error('❌ Failed to fetch video:', response.status, response.statusText);
+      log('error', req, '❌ Failed to fetch video:', response.status, response.statusText);
       const errorBody = await response.text();
       return res.status(response.status).json({ error: `Failed to download: ${response.statusText}`, details: errorBody });
     }
@@ -392,7 +419,7 @@ app.get('/api/veo/download-video', async (req, res) => {
     const contentLength = response.headers.get('content-length');
     const filename = `monoklix-video-${Date.now()}.mp4`;
 
-    console.log('📦 Video headers received:', { contentType, contentLength });
+    log('log', req, '📦 Video headers received:', { contentType, contentLength });
 
     res.setHeader('Content-Type', contentType);
     if (contentLength) {
@@ -404,19 +431,19 @@ app.get('/api/veo/download-video', async (req, res) => {
     response.body.pipe(res);
 
     response.body.on('end', () => {
-      console.log('✅ [DOWNLOAD] Video stream finished to client.');
-      console.log('=========================================\n');
+      log('log', req, '✅ [DOWNLOAD] Video stream finished to client.');
+      log('log', req, '=========================================\n');
     });
 
     response.body.on('error', (err) => {
-      console.error('❌ [DOWNLOAD] Error during video stream pipe:', err);
+      log('error', req, '❌ [DOWNLOAD] Error during video stream pipe:', err);
       if (!res.headersSent) {
         res.status(500).json({ error: 'Error streaming video' });
       }
     });
 
   } catch (error) {
-    console.error('❌ Proxy error (DOWNLOAD):', error);
+    log('error', req, '❌ Proxy error (DOWNLOAD):', error);
     if (!res.headersSent) {
       res.status(500).json({ error: error.message });
     }
@@ -427,24 +454,26 @@ app.get('/api/veo/download-video', async (req, res) => {
 // 🚀 SERVER START
 // ===============================
 app.listen(PORT, '0.0.0.0', () => {
-  console.log('\n🚀 ===================================');
-  console.log('🚀 Veo3 & Imagen Proxy Server STARTED');
-  console.log('🚀 ===================================');
-  console.log(`📍 Port: ${PORT}`);
-  console.log(`📍 Local: http://localhost:${PORT}`);
-  console.log(`📍 Health: http://localhost:${PORT}/health`);
-  console.log('✅ CORS: Allow all origins');
-  console.log('🔧 Debug logging: ENABLED');
-  console.log('===================================\n');
-  console.log('📋 VEO3 Endpoints:');
-  console.log('   POST /api/veo/generate-t2v');
-  console.log('   POST /api/veo/generate-i2v');
-  console.log('   POST /api/veo/status');
-  console.log('   POST /api/veo/upload');
-  console.log('   GET  /api/veo/download-video');
-  console.log('\n📋 IMAGEN Endpoints:');
-  console.log('   POST /api/imagen/generate');
-  console.log('   POST /api/imagen/run-recipe');
-  console.log('   POST /api/imagen/upload');
-  console.log('===================================\n');
+  const logSystem = (...args) => log('log', null, ...args);
+
+  logSystem('\n🚀 ===================================');
+  logSystem('🚀 Veo3 & Imagen Proxy Server STARTED');
+  logSystem('🚀 ===================================');
+  logSystem(`📍 Port: ${PORT}`);
+  logSystem(`📍 Local: http://localhost:${PORT}`);
+  logSystem(`📍 Health: http://localhost:${PORT}/health`);
+  logSystem('✅ CORS: Allow all origins');
+  logSystem('🔧 Debug logging: ENABLED');
+  logSystem('===================================\n');
+  logSystem('📋 VEO3 Endpoints:');
+  logSystem('   POST /api/veo/generate-t2v');
+  logSystem('   POST /api/veo/generate-i2v');
+  logSystem('   POST /api/veo/status');
+  logSystem('   POST /api/veo/upload');
+  logSystem('   GET  /api/veo/download-video');
+  logSystem('\n📋 IMAGEN Endpoints:');
+  logSystem('   POST /api/imagen/generate');
+  logSystem('   POST /api/imagen/run-recipe');
+  logSystem('   POST /api/imagen/upload');
+  logSystem('===================================\n');
 });

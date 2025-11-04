@@ -1,18 +1,21 @@
 import { addLogEntry } from './aiLogService';
+// FIX: The 'User' type is not exported from 'userService'. It is defined and exported from '../types'.
+// This change corrects the import path to resolve the module declaration error.
 import { getVeoAuthTokens } from './userService';
+import { type User } from '../types';
 import eventBus from './eventBus';
 import { supabase } from './supabaseClient';
 
 export const getVeoProxyUrl = (): string => {
   if (process.env.NODE_ENV === 'production') {
-    return 'https://veo.monoklix.com';
+    return 'https://veox.monoklix.com';
   }
   return '';
 };
 
 export const getImagenProxyUrl = (): string => {
   if (process.env.NODE_ENV === 'production') {
-    return 'https://gem.monoklix.com';
+    return 'https://gemx.monoklix.com';
   }
   return '';
 };
@@ -47,6 +50,22 @@ const getPersonalToken = (): { token: string; createdAt: string; } | null => {
     return null;
 };
 
+const getCurrentUserInternal = (): User | null => {
+    try {
+        const savedUserJson = localStorage.getItem('currentUser');
+        if (savedUserJson) {
+            const user = JSON.parse(savedUserJson) as User;
+            if (user && user.id) {
+                return user;
+            }
+        }
+    } catch (error) {
+        console.error("Failed to parse user from localStorage for activity log.", error);
+    }
+    return null;
+};
+
+
 export const fetchWithTokenRotation = async (
   endpoint: string,
   requestBody: any,
@@ -55,6 +74,7 @@ export const fetchWithTokenRotation = async (
   onStatusUpdate?: (status: string) => void
 ): Promise<{ data: any; successfulToken: string }> => {
   console.log(`[API Client] Starting process for: ${logContext}`);
+  const currentUser = getCurrentUserInternal();
 
   // --- Global Queueing Logic ---
   const isGenerationRequest = logContext.includes('GENERATE') || logContext.includes('RECIPE');
@@ -86,6 +106,12 @@ export const fetchWithTokenRotation = async (
   } else {
     const personalToken = getPersonalToken();
     let sharedTokens = getSharedTokens();
+
+    // Shuffle the shared tokens to distribute the load
+    for (let i = sharedTokens.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [sharedTokens[i], sharedTokens[j]] = [sharedTokens[j], sharedTokens[i]];
+    }
 
     if (sharedTokens.length === 0) {
         console.log(`[API Client] No shared tokens in session for ${logContext}. Attempting re-fetch.`);
@@ -129,6 +155,7 @@ export const fetchWithTokenRotation = async (
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${currentToken.token}`,
+          'x-user-username': currentUser?.username || 'unknown',
         },
         body: JSON.stringify(requestBody),
       });
